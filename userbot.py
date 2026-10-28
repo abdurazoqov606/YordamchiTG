@@ -7,6 +7,9 @@ from telethon import TelegramClient, events, Button, errors
 from telethon.sessions import StringSession
 from telethon.tl.functions.account import UpdateProfileRequest
 
+loop = asyncio.new_event_loop()
+asyncio.set_event_loop(loop)
+
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("userbot")
 
@@ -302,4 +305,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    loop.run_until_complete(main())
