@@ -277,32 +277,38 @@ async def keepalive():
             pass
 
 
-async def run_clients():
-    await bot.start(bot_token=BOT_TOKEN)
-    await user.connect()
-    try:
-        await bot.send_message(OWNER_ID, "Bot ishga tushdi. /panel")
-    except Exception:
-        pass
-    await asyncio.gather(bot.run_until_disconnected(), user.run_until_disconnected())
+async def ensure(client, name, bot_mode=False):
+    """Klientni ulaydi; ulanish uzilsa qayta ulaydi. Hech qachon qulamaydi."""
+    while True:
+        try:
+            if not client.is_connected():
+                if bot_mode:
+                    await client.start(bot_token=BOT_TOKEN)
+                else:
+                    await client.connect()
+                log.info("%s ulandi", name)
+                if bot_mode:
+                    try:
+                        await client.send_message(OWNER_ID, "Bot ishga tushdi. /panel")
+                    except Exception:
+                        log.exception("Start xabari yuborilmadi")
+        except Exception:
+            log.exception("%s ulanishda xato", name)
+            await asyncio.sleep(10)
+            continue
+        await asyncio.sleep(30)
 
 
 async def main():
     await web_server()
     asyncio.create_task(bio_loop())
     asyncio.create_task(keepalive())
+    asyncio.create_task(ensure(bot, "bot", True))
+    asyncio.create_task(ensure(user, "user"))
     while True:
-        try:
-            await run_clients()
-        except Exception:
-            log.exception("Asosiy sikl xatosi, 10 soniyadan keyin qayta ishga tushadi")
-        for c in (bot, user):
-            try:
-                await c.disconnect()
-            except Exception:
-                pass
-        await asyncio.sleep(10)
+        await asyncio.sleep(3600)
 
 
 if __name__ == "__main__":
     loop.run_until_complete(main())
+  
