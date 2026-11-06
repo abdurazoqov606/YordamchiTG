@@ -5,7 +5,9 @@ from zoneinfo import ZoneInfo
 from aiohttp import web, ClientSession
 from telethon import TelegramClient, events, Button, errors
 from telethon.sessions import StringSession
-from telethon.tl.functions.account import UpdateProfileRequest
+from telethon.tl.functions.account import UpdateProfileRequest, UpdateStatusRequest
+from telethon.tl.functions.messages import SendReactionRequest
+from telethon.tl.types import ReactionEmoji
 
 loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
@@ -18,7 +20,7 @@ API_ID = int(os.getenv("API_ID", "39137299"))
 API_HASH = os.getenv("API_HASH", "e67d098704ca5ce1f4a33a2b33e97f89")
 BOT_TOKEN = os.getenv("BOT_TOKEN", "9268503477:AAEgumOj9dlPTlYW3-azhNEe3MGTa1vg2aE")
 OWNER_ID = int(os.getenv("OWNER_ID", "8426582765"))
-SESSION_STRING = os.getenv("SESSION_STRING", "")
+SESSION_STRING = os.getenv("SESSION_STRING", "1ApWapzMBu0I2SiR7AljkqQcJSvbsRmgv5FkagyN-MEy_fvFlKYwBn6mF1gSjvpnf1pvny99QQnaJ_ao938iKAngagnIxYQBoXLimSiApDSAW6updQedIOV_u5J9etunFhEQP20bUctZ18m6ybKC1u_bHBZVhoIs6NRgTU5N3aFemFnM-QJr1AYONvAYerErMsAMEnJ64uIkf3Vk9qMpsgvc3L-jZMEuDv71SsJEpTTTdUrW4WyuJJu_dXXIdGMXZNtL-j-aCYTfb3tIQzUD0RRIn7Lt3sorFypcsYv5U-AEAvCPx-OT3tYLtL8uOeY-bSryDbr9wM-INnRF0DtjBvif9YtiszCU=")
 DATA_DIR = os.getenv("DATA_DIR", ".")
 PORT = int(os.getenv("PORT", "10000"))
 SELF_URL = os.getenv("RENDER_EXTERNAL_URL", "")
@@ -34,11 +36,13 @@ CREATE TABLE IF NOT EXISTS msgs(id INTEGER, chat INTEGER, sender INTEGER,
   PRIMARY KEY(id, chat));
 CREATE TABLE IF NOT EXISTS greeted(uid INTEGER PRIMARY KEY, ts REAL);
 CREATE TABLE IF NOT EXISTS cfg(k TEXT PRIMARY KEY, v TEXT);
+CREATE TABLE IF NOT EXISTS skip(uid INTEGER PRIMARY KEY, name TEXT);
 """)
 DEFAULTS = {"greet": "1", "bio": "1", "edits": "1", "deletes": "1",
-            "archive": "1", "biotext": "da ham meni hayolimdasan", "session": ""}
+            "archive": "1", "hide_online": "1", "biotext": "da ham meni hayolimdasan", "session": ""}
 LABELS = {"greet": "Salomlashish", "bio": "Bio soat", "edits": "Tahrir kuzatuv",
-          "deletes": "O'chirish kuzatuv", "archive": "Arxiv (txt)"}
+          "deletes": "O'chirish kuzatuv", "archive": "Arxiv (txt)",
+          "hide_online": "Online yashirish"}
 
 
 def get(k):
@@ -92,7 +96,43 @@ async def save(e):
     db.commit()
 
 
-# ---------- Salomlashish (faqat odam yozsa, sutkada 1 marta) ----------
+# ---------- Salomlashish (faqat odam yozsa, kuniga 1 marta) ----------
+GREET_STEPS = [
+    "안녕하세요",
+    "Привет, здравствуйте!",
+    "Ассалом Алейкум, онлайн болсам алокага чикаман).",
+]
+
+
+def greeted_today(uid):
+    r = db.execute("SELECT ts FROM greeted WHERE uid=?", (uid,)).fetchone()
+    return bool(r) and datetime.fromtimestamp(r[0], TZ).date() == datetime.now(TZ).date()
+
+
+def mark_greeted(uid):
+    db.execute("INSERT OR REPLACE INTO greeted VALUES(?,?)", (uid, time.time()))
+    db.commit()
+
+
+def is_skipped(uid):
+    return db.execute("SELECT 1 FROM skip WHERE uid=?", (uid,)).fetchone() is not None
+
+
+async def go_offline():
+    if on("hide_online"):
+        try:
+            await user(UpdateStatusRequest(offline=True))
+        except Exception:
+            pass
+
+
+# Men birinchi yozsam, o'sha kuni u menga javob yozganda salom bermaydi
+@user.on(events.NewMessage(outgoing=True, func=lambda e: e.is_private))
+@safe
+async def mine(e):
+    mark_greeted(e.chat_id)
+
+
 @user.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
 @safe
 async def greet(e):
@@ -101,16 +141,19 @@ async def greet(e):
     s = await e.get_sender()
     if not s or getattr(s, "bot", False) or e.sender_id in (777000, OWNER_ID):
         return
-    r = db.execute("SELECT ts FROM greeted WHERE uid=?", (e.sender_id,)).fetchone()
-    if r and time.time() - r[0] < 86400:
+    if is_skipped(e.sender_id) or greeted_today(e.sender_id):
         return
-    db.execute("INSERT OR REPLACE INTO greeted VALUES(?,?)", (e.sender_id, time.time()))
-    db.commit()
+    mark_greeted(e.sender_id)
+    try:
+        await user(SendReactionRequest(peer=e.chat_id, msg_id=e.id,
+                                       reaction=[ReactionEmoji(emoticon="👍")]))
+    except Exception as ex:
+        log.warning("reaksiya xato: %s", ex)
     m = await e.respond("Hello")
-    await asyncio.sleep(1.5)
-    await m.edit("안녕하세요")
-    await asyncio.sleep(1.5)
-    await m.edit("Assalomu aleykum, nima xizmat?!")
+    for t in GREET_STEPS:
+        await asyncio.sleep(1.5)
+        await m.edit(t)
+    await go_offline()
 
 
 # ---------- Tahrirlash ----------
@@ -176,7 +219,7 @@ def owner(e):
 @safe
 async def start(e):
     ok = await user.is_user_authorized()
-    await e.respond(f"Boshqaruv paneli\nAkkaunt: {'ulangan ✅' if ok else 'ulanmagan ❌ (/login +998...)'}",
+    await e.respond(f"Boshqaruv paneli\nAkkaunt: {'ulangan ✅' if ok else 'ulanmagan ❌ (/login +998...)'}\n\nSalomlashishni cheklash: kontakt yuboring. Ro'yxat: /skiplist",
                     buttons=panel())
 
 
@@ -186,6 +229,47 @@ async def toggle(e):
     k = e.data.decode()[2:]
     put(k, "0" if on(k) else "1")
     await e.edit(buttons=panel())
+
+
+def skip_buttons():
+    rows = db.execute("SELECT uid,name FROM skip").fetchall()
+    return [[Button.inline(f"❌ {n}", f"u:{u}".encode())] for u, n in rows]
+
+
+@bot.on(events.NewMessage(func=lambda e: e.sender_id == OWNER_ID and bool(e.message.contact)))
+@safe
+async def skip_contact(e):
+    c = e.message.contact
+    uid = c.user_id
+    if not uid:
+        return await e.respond("Bu kontakt Telegramda topilmadi ❌")
+    name = " ".join(filter(None, [c.first_name, c.last_name])) or str(uid)
+    if is_skipped(uid):
+        db.execute("DELETE FROM skip WHERE uid=?", (uid,))
+        db.commit()
+        await e.respond(f"✅ {name} cheklovdan chiqarildi (yana salomlashadi)")
+    else:
+        db.execute("INSERT OR REPLACE INTO skip VALUES(?,?)", (uid, name))
+        db.commit()
+        await e.respond(f"🚫 {name} ga salomlashish cheklandi.\nQayta yuborsangiz cheklov olib tashlanadi.")
+
+
+@bot.on(events.NewMessage(pattern="/skiplist", func=owner))
+@safe
+async def skiplist(e):
+    b = skip_buttons()
+    await e.respond("Cheklanganlar (bosib o'chiring):" if b else "Cheklanganlar ro'yxati bo'sh",
+                    buttons=b or None)
+
+
+@bot.on(events.CallbackQuery(pattern=b"u:", func=lambda e: e.sender_id == OWNER_ID))
+@safe
+async def unskip(e):
+    db.execute("DELETE FROM skip WHERE uid=?", (int(e.data.decode()[2:]),))
+    db.commit()
+    b = skip_buttons()
+    await e.edit("Cheklanganlar (bosib o'chiring):" if b else "Cheklanganlar ro'yxati bo'sh",
+                 buttons=b or None)
 
 
 @bot.on(events.NewMessage(pattern=r"/biotext (.+)", func=owner))
